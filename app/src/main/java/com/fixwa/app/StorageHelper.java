@@ -15,8 +15,6 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Utility class that handles storage calculation and dummy-file management.
@@ -42,26 +40,29 @@ public final class StorageHelper {
     public static boolean fillStorage(Context ctx) {
         long keepFreeBytes = BuildConfig.KEEP_FREE_MB * 1024L * 1024L;
 
-        // Delete ALL existing filler entries (published + pending) first
-        // so we always have a clean single file with the exact right size
-        deleteAllFillers(ctx);
-
-        // Measure free space after deletion
         long freeBytes  = getFreeBytes(Environment.getExternalStorageDirectory());
         long targetSize = Math.max(0, freeBytes - keepFreeBytes);
 
         Log.i(TAG, String.format(
                 "free=%,d MB  keepFree=%,d MB  target=%,d MB",
-                freeBytes    / (1024 * 1024),
+                freeBytes     / (1024 * 1024),
                 keepFreeBytes / (1024 * 1024),
-                targetSize   / (1024 * 1024)));
+                targetSize    / (1024 * 1024)));
 
         if (targetSize == 0) {
             Log.i(TAG, "Nothing to fill — less than KEEP_FREE_MB available.");
             return true;
         }
 
-        return writeMediaStoreFile(ctx, targetSize);
+        // Divide by number of existing fillers + 1 so all files together
+        // sum to targetSize without needing to delete anything
+        int existingCount = countFillers(ctx);
+        long perFileSize  = targetSize / (existingCount + 1);
+
+        Log.i(TAG, String.format("existingFillers=%d  perFile=%,d MB",
+                existingCount, perFileSize / (1024 * 1024)));
+
+        return writeMediaStoreFile(ctx, perFileSize);
     }
 
     // -----------------------------------------------------------------------
@@ -73,34 +74,18 @@ public final class StorageHelper {
         return MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
     }
 
-    /** Delete ALL filler entries (published + pending) from MediaStore. */
-    private static void deleteAllFillers(Context ctx) {
-        // Collect all IDs first, then delete each by URI
-        // (querying with LIKE catches both fixwa_filler.bin and .pending-xxx-fixwa_filler.bin)
+    /** Count all existing filler entries (published + pending) in MediaStore. */
+    private static int countFillers(Context ctx) {
         String[] proj = { MediaStore.MediaColumns._ID };
         String sel    = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
         String[] args = { "%" + FILENAME + "%" };
-
-        List<Long> ids = new ArrayList<>();
         try (Cursor c = ctx.getContentResolver().query(
                 getCollection(), proj, sel, args, null)) {
-            while (c != null && c.moveToNext()) {
-                ids.add(c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)));
-            }
+            return c != null ? c.getCount() : 0;
         } catch (Exception e) {
-            Log.w(TAG, "deleteAllFillers query: " + e.getMessage());
+            Log.w(TAG, "countFillers: " + e.getMessage());
+            return 0;
         }
-
-        for (long id : ids) {
-            Uri uri = ContentUris.withAppendedId(getCollection(), id);
-            try {
-                ctx.getContentResolver().delete(uri, null, null);
-                Log.i(TAG, "Deleted filler id=" + id);
-            } catch (Exception e) {
-                Log.w(TAG, "Could not delete id=" + id + ": " + e.getMessage());
-            }
-        }
-        Log.i(TAG, "Deleted " + ids.size() + " filler entries.");
     }
 
     /**
