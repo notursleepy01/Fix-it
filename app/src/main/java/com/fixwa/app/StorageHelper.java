@@ -6,8 +6,10 @@ import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.os.StatFs;
 import android.provider.MediaStore;
+import android.system.Os;
 import android.util.Log;
 
 import java.io.File;
@@ -132,16 +134,30 @@ public final class StorageHelper {
                 return false;
             }
 
-            // Write actual bytes in 4 MB chunks so space is truly consumed
-            final int CHUNK = 4 * 1024 * 1024;
-            byte[] buf = new byte[CHUNK];
-            try (OutputStream os = cr.openOutputStream(itemUri)) {
-                if (os == null) throw new IOException("null OutputStream");
-                long written = 0;
-                while (written < size) {
-                    int toWrite = (int) Math.min(CHUNK, size - written);
-                    os.write(buf, 0, toWrite);
-                    written += toWrite;
+            // Try fallocate first — instant on ext4/f2fs, no actual I/O
+            boolean allocated = false;
+            try (ParcelFileDescriptor pfd = cr.openFileDescriptor(itemUri, "rw")) {
+                if (pfd != null) {
+                    Os.posix_fallocate(pfd.getFileDescriptor(), 0, size);
+                    allocated = true;
+                    Log.i(TAG, "fallocate succeeded");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "fallocate failed, falling back to write: " + e.getMessage());
+            }
+
+            // Fallback: write in large chunks if fallocate not supported
+            if (!allocated) {
+                final int CHUNK = 8 * 1024 * 1024; // 8 MB chunks
+                byte[] buf = new byte[CHUNK];
+                try (OutputStream os = cr.openOutputStream(itemUri)) {
+                    if (os == null) throw new IOException("null OutputStream");
+                    long written = 0;
+                    while (written < size) {
+                        int toWrite = (int) Math.min(CHUNK, size - written);
+                        os.write(buf, 0, toWrite);
+                        written += toWrite;
+                    }
                 }
             }
 
@@ -150,8 +166,7 @@ public final class StorageHelper {
             cv.put(MediaStore.MediaColumns.IS_PENDING, 0);
             cr.update(itemUri, cv, null, null);
 
-            Log.i(TAG, String.format("Filler written via MediaStore Downloads: %,d MB",
-                    size / (1024 * 1024)));
+            Log.i(TAG, String.format("Filler ready: %,d MB", size / (1024 * 1024)));
             return true;
 
         } catch (Exception e) {
