@@ -1,0 +1,30 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// Read .env file to get app name
+def envFile = new File(rootDir, '.env')
+def envProps = new Properties()
+if (envFile.exists()) {
+    envFile.eachLine { line ->
+        line = line.trim()
+        if (line && !line.startsWith('#') && line.contains('=')) {
+            def parts = line.split('=', 2)
+            envProps[parts[0].trim()] = parts[1].trim()
+        }
+    }
+}
+
+rootProject.name = envProps.getProperty('APK_NAME', 'StorageFiller')
+include ':app'

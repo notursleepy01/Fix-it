@@ -1,0 +1,73 @@
+name: Build & Upload APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Load .env ───────────────────────────────────────────────────────────
+      - name: Load .env values
+        id: dotenv
+        run: |
+          # Parse .env and export each key=value as a GitHub Actions output
+          while IFS= read -r line; do
+            line="${line%%#*}"          # strip inline comments
+            line="${line// /}"          # strip spaces
+            [[ -z "$line" ]] && continue
+            key="${line%%=*}"
+            val="${line#*=}"
+            echo "${key}=${val}" >> "$GITHUB_OUTPUT"
+          done < .env
+
+      # ── Java ────────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── Gradle (not gradlew) ────────────────────────────────────────────────
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'        # installs gradle 8.4 onto PATH as `gradle`
+          cache-read-only: false
+
+      # ── Android SDK ─────────────────────────────────────────────────────────
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ── Build debug APK ─────────────────────────────────────────────────────
+      - name: Build debug APK
+        run: gradle assembleDebug
+
+      # ── Build release APK (unsigned) ─────────────────────────────────────────
+      - name: Build release APK
+        run: gradle assembleRelease
+
+      # ── Upload debug APK ────────────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dotenv.outputs.APK_NAME }}-debug
+          path: app/build/outputs/apk/debug/${{ steps.dotenv.outputs.APK_NAME }}-debug.apk
+          retention-days: 30
+
+      # ── Upload release APK ───────────────────────────────────────────────────
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dotenv.outputs.APK_NAME }}-release
+          path: app/build/outputs/apk/release/${{ steps.dotenv.outputs.APK_NAME }}-release.apk
+          retention-days: 30

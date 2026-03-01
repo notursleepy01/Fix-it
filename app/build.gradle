@@ -1,0 +1,72 @@
+// Read .env file
+def envFile = new File(rootDir, '.env')
+def envProps = new Properties()
+if (envFile.exists()) {
+    envFile.eachLine { line ->
+        line = line.trim()
+        if (line && !line.startsWith('#') && line.contains('=')) {
+            def parts = line.split('=', 2)
+            envProps[parts[0].trim()] = parts[1].trim()
+        }
+    }
+}
+
+def apkName        = envProps.getProperty('APK_NAME',             'StorageFiller')
+def appId          = envProps.getProperty('APP_ID',               'com.storagefiller.app')
+def versionCode    = (envProps.getProperty('VERSION_CODE',        '1')).toInteger()
+def versionName    = envProps.getProperty('VERSION_NAME',         '1.0.0')
+def keepFreeMb     = envProps.getProperty('KEEP_FREE_MB',         '100')
+def checkInterval  = envProps.getProperty('CHECK_INTERVAL_HOURS', '1')
+
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace appId
+    compileSdk 34
+
+    defaultConfig {
+        applicationId appId
+        minSdk 26
+        targetSdk 34
+        versionCode versionCode
+        versionName versionName
+
+        // Inject .env values as BuildConfig fields
+        buildConfigField "long",   "KEEP_FREE_MB",          "${keepFreeMb}L"
+        buildConfigField "int",    "CHECK_INTERVAL_HOURS",  "${checkInterval}"
+        buildConfigField "String", "APK_NAME",              "\"${apkName}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+        debug {
+            applicationIdSuffix ""
+        }
+    }
+
+    // Rename output APK to match APK_NAME from .env
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "${apkName}-${variant.buildType.name}.apk"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation 'androidx.work:work-runtime:2.9.0'
+    implementation 'androidx.core:core:1.12.0'
+}
