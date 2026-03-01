@@ -15,28 +15,28 @@ if (envFile.exists()) {
     }
 }
 
-def apkName        = envProps.getProperty('APK_NAME',             'StorageFiller')
-def appId          = envProps.getProperty('APP_ID',               'com.storagefiller.app')
-def versionCode    = Integer.parseInt(envProps.getProperty('VERSION_CODE', '1'))
-def versionName    = envProps.getProperty('VERSION_NAME',         '1.0.0')
-def keepFreeMb     = envProps.getProperty('KEEP_FREE_MB',         '10240')
-def checkInterval  = envProps.getProperty('CHECK_INTERVAL_HOURS', '1')
+def envApkName       = envProps.getProperty('APK_NAME',             'StorageFiller')
+def envAppId         = envProps.getProperty('APP_ID',               'com.storagefiller.app')
+def envVersionCode   = Integer.parseInt(envProps.getProperty('VERSION_CODE', '1'))
+def envVersionName   = envProps.getProperty('VERSION_NAME',         '1.0.0')
+def envKeepFreeMb    = envProps.getProperty('KEEP_FREE_MB',         '10240')
+def envCheckInterval = envProps.getProperty('CHECK_INTERVAL_HOURS', '1')
 
 android {
-    namespace appId
+    namespace envAppId
     compileSdk 34
 
     defaultConfig {
-        applicationId appId
+        applicationId envAppId
         minSdk 26
         targetSdk 34
-        versionCode versionCode
-        versionName versionName
+        versionCode envVersionCode
+        versionName envVersionName
 
         // Inject .env values as BuildConfig fields
-        buildConfigField "long",   "KEEP_FREE_MB",          "${keepFreeMb}L"
-        buildConfigField "int",    "CHECK_INTERVAL_HOURS",  "${checkInterval}"
-        buildConfigField "String", "APK_NAME",              "\"${apkName}\""
+        buildConfigField "long",   "KEEP_FREE_MB",          "${envKeepFreeMb}L"
+        buildConfigField "int",    "CHECK_INTERVAL_HOURS",  "${envCheckInterval}"
+        buildConfigField "String", "APK_NAME",              "\"${envApkName}\""
     }
 
     buildFeatures {
@@ -56,7 +56,7 @@ android {
     // Rename output APK to match APK_NAME from .env
     applicationVariants.all { variant ->
         variant.outputs.all { output ->
-            outputFileName = "${apkName}-${variant.buildType.name}.apk"
+            outputFileName = "${envApkName}-${variant.buildType.name}.apk"
         }
     }
 
