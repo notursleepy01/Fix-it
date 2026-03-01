@@ -1,6 +1,7 @@
 package com.fixwa.app;
 
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
@@ -40,38 +41,33 @@ public final class StorageHelper {
     public static boolean fillStorage(Context ctx) {
         long keepFreeBytes = BuildConfig.KEEP_FREE_MB * 1024L * 1024L;
 
-        // Use the primary shared storage for free-space measurement
         File extStorage = Environment.getExternalStorageDirectory();
         long freeBytes  = getFreeBytes(extStorage);
 
-        // Find existing filler size via MediaStore
-        long existingSize = getMediaStoreFileSize(ctx);
-        long realFree     = freeBytes + existingSize;
-        long targetSize   = Math.max(0, realFree - keepFreeBytes);
+        // Sum up all existing filler files (published + pending)
+        long existingTotal = getTotalFillerSize(ctx);
+        long realFree      = freeBytes + existingTotal;
+        long targetTotal   = Math.max(0, realFree - keepFreeBytes);
 
         Log.i(TAG, String.format(
                 "free=%,d MB  existing=%,d MB  target=%,d MB",
-                freeBytes    / (1024 * 1024),
-                existingSize / (1024 * 1024),
-                targetSize   / (1024 * 1024)));
+                freeBytes     / (1024 * 1024),
+                existingTotal / (1024 * 1024),
+                targetTotal   / (1024 * 1024)));
 
-        if (targetSize == 0) {
-            Log.i(TAG, "Nothing to fill — deleting filler if present.");
-            deleteMediaStoreFile(ctx);
+        if (targetTotal == 0) {
+            Log.i(TAG, "Nothing to fill.");
             return true;
         }
 
-        // Skip rewrite if within 1 MB of target
-        if (Math.abs(existingSize - targetSize) < 1024L * 1024L) {
+        // Skip if already within 1 MB of target
+        if (Math.abs(existingTotal - targetTotal) < 1024L * 1024L) {
             Log.i(TAG, "Filler already correct size — skipping.");
             return true;
         }
 
-        // Delete old entry first so we start fresh
-        deleteMediaStoreFile(ctx);
-
-        // Write via MediaStore — no permission needed on API 29+
-        return writeMediaStoreFile(ctx, targetSize);
+        // Resize existing files to share the target evenly, or create new ones
+        return resizeFillers(ctx, targetTotal);
     }
 
     // -----------------------------------------------------------------------
@@ -83,51 +79,87 @@ public final class StorageHelper {
         return MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
     }
 
-    /** Returns the size in bytes of our filler entry in MediaStore, or 0. */
-    private static long getMediaStoreFileSize(Context ctx) {
-        // Include pending files in query so we account for interrupted writes
-        String[] proj = { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE };
-        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
-                      + MediaStore.MediaColumns.IS_PENDING + "=0";
-        String[] args = { FILENAME };
+    /** Query all our filler files (published + pending) and return a map of id→size. */
+    private static java.util.Map<Long, Long> queryFillers(Context ctx) {
+        java.util.Map<Long, Long> map = new java.util.LinkedHashMap<>();
+        String[] proj = {
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.MediaColumns.IS_PENDING
+        };
+        // Match any display name starting with our base name
+        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
+        String[] args = { FILENAME + "%" };
 
         try (Cursor c = ctx.getContentResolver().query(
                 getCollection(), proj, sel, args, null)) {
-            if (c != null && c.moveToFirst()) {
-                return c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE));
+            while (c != null && c.moveToNext()) {
+                long id   = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID));
+                long size = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE));
+                map.put(id, size);
             }
         } catch (Exception e) {
-            Log.w(TAG, "getMediaStoreFileSize: " + e.getMessage());
+            Log.w(TAG, "queryFillers: " + e.getMessage());
         }
-        return 0L;
+        return map;
     }
 
-    /** Delete ALL our filler entries from MediaStore — including any stale pending ones. */
-    private static void deleteMediaStoreFile(Context ctx) {
-        // Match by display name only — removes both pending and published copies
-        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
-        String[] args = { FILENAME };
-        try {
-            // Must set MATCH_INCLUDE to also delete pending entries
-            Uri collection = getCollection().buildUpon()
-                    .appendQueryParameter("match_pending", "1")
-                    .build();
-            int deleted = ctx.getContentResolver().delete(collection, sel, args);
-            Log.i(TAG, "Deleted " + deleted + " filler entries from MediaStore.");
+    /** Sum of all existing filler file sizes. */
+    private static long getTotalFillerSize(Context ctx) {
+        long total = 0;
+        for (long size : queryFillers(ctx).values()) total += size;
+        return total;
+    }
+
+    /**
+     * Resize existing filler files so they together equal {@code targetTotal}.
+     * Each file gets an equal share (targetTotal / count).
+     * If no files exist yet, creates one.
+     */
+    private static boolean resizeFillers(Context ctx, long targetTotal) {
+        java.util.Map<Long, Long> existing = queryFillers(ctx);
+
+        if (existing.isEmpty()) {
+            // No existing files — create a single new one
+            return writeMediaStoreFile(ctx, targetTotal);
+        }
+
+        int count        = existing.size();
+        long sharePerFile = targetTotal / count;
+        boolean ok       = true;
+
+        for (long id : existing.keySet()) {
+            Uri uri = ContentUris.withAppendedId(getCollection(), id);
+            ok &= resizeUri(ctx, uri, sharePerFile);
+        }
+        return ok;
+    }
+
+    /** Resize an existing MediaStore entry to {@code newSize} bytes using fallocate. */
+    private static boolean resizeUri(Context ctx, Uri uri, long newSize) {
+        try (ParcelFileDescriptor pfd = ctx.getContentResolver().openFileDescriptor(uri, "rw")) {
+            if (pfd == null) return false;
+            Os.posix_fallocate(pfd.getFileDescriptor(), 0, newSize);
+            Log.i(TAG, String.format("Resized %s → %,d MB", uri, newSize / (1024 * 1024)));
+            return true;
         } catch (Exception e) {
-            // Fallback without the query param
-            try {
-                int deleted = ctx.getContentResolver().delete(getCollection(), sel, args);
-                Log.i(TAG, "Deleted " + deleted + " filler entries (fallback).");
+            Log.w(TAG, "resizeUri fallocate failed, trying truncate: " + e.getMessage());
+            // Fallback: truncate/extend with RandomAccessFile via fd
+            try (ParcelFileDescriptor pfd = ctx.getContentResolver().openFileDescriptor(uri, "rw")) {
+                if (pfd == null) return false;
+                android.system.OsConstants.class.getField("F_OK"); // dummy to keep import
+                new java.io.FileOutputStream(pfd.getFileDescriptor()).getChannel().truncate(newSize);
+                return true;
             } catch (Exception e2) {
-                Log.w(TAG, "deleteMediaStoreFile: " + e2.getMessage());
+                Log.e(TAG, "resizeUri failed: " + e2.getMessage());
+                return false;
             }
         }
     }
 
     /**
      * Insert a new file into MediaStore Downloads and write
-     * {@code size} bytes of zeroes. No storage permission needed on API 29+.
+     * {@code size} bytes. No storage permission needed on API 29+.
      */
     private static boolean writeMediaStoreFile(Context ctx, long size) {
         ContentResolver cr = ctx.getContentResolver();
