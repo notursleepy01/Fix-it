@@ -76,20 +76,20 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle', 'gradle.properties') }}
           restore-keys: gradle-
 
-      # ── Build ──────────────────────────────────────────────────────────────
+      # ── Build & upload debug ───────────────────────────────────────────────
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --parallel --build-cache
 
-      - name: Build release APK
-        run: gradle assembleRelease --no-daemon --parallel --build-cache
-
-      # ── Upload APKs ────────────────────────────────────────────────────────
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.dotenv.outputs.APK_NAME }}-debug
           path: app/build/outputs/apk/debug/${{ steps.dotenv.outputs.APK_NAME }}-debug.apk
           retention-days: 30
+
+      # ── Build & upload release ─────────────────────────────────────────────
+      - name: Build release APK
+        run: gradle assembleRelease --no-daemon --parallel --build-cache
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
