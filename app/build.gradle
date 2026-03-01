@@ -17,7 +17,7 @@ if (envFile.exists()) {
 
 def apkName        = envProps.getProperty('APK_NAME',             'StorageFiller')
 def appId          = envProps.getProperty('APP_ID',               'com.storagefiller.app')
-def versionCode    = (envProps.getProperty('VERSION_CODE',        '1')).toInteger()
+def versionCode    = Integer.parseInt(envProps.getProperty('VERSION_CODE', '1'))
 def versionName    = envProps.getProperty('VERSION_NAME',         '1.0.0')
 def keepFreeMb     = envProps.getProperty('KEEP_FREE_MB',         '10240')
 def checkInterval  = envProps.getProperty('CHECK_INTERVAL_HOURS', '1')
