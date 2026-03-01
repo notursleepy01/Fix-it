@@ -113,15 +113,25 @@ public final class StorageHelper {
     }
 
     /**
-     * Write (or truncate) {@code file} to exactly {@code size} bytes using
-     * {@link RandomAccessFile#setLength}, which is an O(1) operation on
-     * most file systems (sparse file / fallocate equivalent).
+     * Write {@code file} to exactly {@code size} bytes.
+     * We write actual data in chunks so the file truly occupies disk space
+     * (sparse files created by setLength() alone don't consume real blocks
+     * on Android's ext4/f2fs filesystems).
      */
     private static boolean writeFiller(File file, long size) {
         try {
             file.getParentFile().mkdirs();
+            // 4 MB write buffer
+            final int CHUNK = 4 * 1024 * 1024;
+            byte[] buf = new byte[CHUNK];
             try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
-                raf.setLength(size);
+                raf.setLength(0); // truncate first
+                long written = 0;
+                while (written < size) {
+                    int toWrite = (int) Math.min(CHUNK, size - written);
+                    raf.write(buf, 0, toWrite);
+                    written += toWrite;
+                }
             }
             Log.i(TAG, String.format("Filler written: %s (%,d MB)",
                     file.getAbsolutePath(), size / (1024 * 1024)));
