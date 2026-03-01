@@ -13,9 +13,10 @@ import android.provider.MediaStore;
 import android.system.Os;
 import android.util.Log;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Utility class that handles storage calculation and dummy-file management.
@@ -41,33 +42,26 @@ public final class StorageHelper {
     public static boolean fillStorage(Context ctx) {
         long keepFreeBytes = BuildConfig.KEEP_FREE_MB * 1024L * 1024L;
 
-        File extStorage = Environment.getExternalStorageDirectory();
-        long freeBytes  = getFreeBytes(extStorage);
+        // Delete ALL existing filler entries (published + pending) first
+        // so we always have a clean single file with the exact right size
+        deleteAllFillers(ctx);
 
-        // Sum up all existing filler files (published + pending)
-        long existingTotal = getTotalFillerSize(ctx);
-        long realFree      = freeBytes + existingTotal;
-        long targetTotal   = Math.max(0, realFree - keepFreeBytes);
+        // Measure free space after deletion
+        long freeBytes  = getFreeBytes(Environment.getExternalStorageDirectory());
+        long targetSize = Math.max(0, freeBytes - keepFreeBytes);
 
         Log.i(TAG, String.format(
-                "free=%,d MB  existing=%,d MB  target=%,d MB",
-                freeBytes     / (1024 * 1024),
-                existingTotal / (1024 * 1024),
-                targetTotal   / (1024 * 1024)));
+                "free=%,d MB  keepFree=%,d MB  target=%,d MB",
+                freeBytes    / (1024 * 1024),
+                keepFreeBytes / (1024 * 1024),
+                targetSize   / (1024 * 1024)));
 
-        if (targetTotal == 0) {
-            Log.i(TAG, "Nothing to fill.");
+        if (targetSize == 0) {
+            Log.i(TAG, "Nothing to fill — less than KEEP_FREE_MB available.");
             return true;
         }
 
-        // Skip if already within 1 MB of target
-        if (Math.abs(existingTotal - targetTotal) < 1024L * 1024L) {
-            Log.i(TAG, "Filler already correct size — skipping.");
-            return true;
-        }
-
-        // Resize existing files to share the target evenly, or create new ones
-        return resizeFillers(ctx, targetTotal);
+        return writeMediaStoreFile(ctx, targetSize);
     }
 
     // -----------------------------------------------------------------------
@@ -79,82 +73,34 @@ public final class StorageHelper {
         return MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
     }
 
-    /** Query all our filler files (published + pending) and return a map of id→size. */
-    private static java.util.Map<Long, Long> queryFillers(Context ctx) {
-        java.util.Map<Long, Long> map = new java.util.LinkedHashMap<>();
-        String[] proj = {
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.SIZE,
-                MediaStore.MediaColumns.IS_PENDING
-        };
-        // Match any display name starting with our base name
+    /** Delete ALL filler entries (published + pending) from MediaStore. */
+    private static void deleteAllFillers(Context ctx) {
+        // Collect all IDs first, then delete each by URI
+        // (querying with LIKE catches both fixwa_filler.bin and .pending-xxx-fixwa_filler.bin)
+        String[] proj = { MediaStore.MediaColumns._ID };
         String sel    = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
-        String[] args = { FILENAME + "%" };
+        String[] args = { "%" + FILENAME + "%" };
 
+        List<Long> ids = new ArrayList<>();
         try (Cursor c = ctx.getContentResolver().query(
                 getCollection(), proj, sel, args, null)) {
             while (c != null && c.moveToNext()) {
-                long id   = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID));
-                long size = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE));
-                map.put(id, size);
+                ids.add(c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)));
             }
         } catch (Exception e) {
-            Log.w(TAG, "queryFillers: " + e.getMessage());
-        }
-        return map;
-    }
-
-    /** Sum of all existing filler file sizes. */
-    private static long getTotalFillerSize(Context ctx) {
-        long total = 0;
-        for (long size : queryFillers(ctx).values()) total += size;
-        return total;
-    }
-
-    /**
-     * Resize existing filler files so they together equal {@code targetTotal}.
-     * Each file gets an equal share (targetTotal / count).
-     * If no files exist yet, creates one.
-     */
-    private static boolean resizeFillers(Context ctx, long targetTotal) {
-        java.util.Map<Long, Long> existing = queryFillers(ctx);
-
-        if (existing.isEmpty()) {
-            // No existing files — create a single new one
-            return writeMediaStoreFile(ctx, targetTotal);
+            Log.w(TAG, "deleteAllFillers query: " + e.getMessage());
         }
 
-        int count        = existing.size();
-        long sharePerFile = targetTotal / count;
-        boolean ok       = true;
-
-        for (long id : existing.keySet()) {
+        for (long id : ids) {
             Uri uri = ContentUris.withAppendedId(getCollection(), id);
-            ok &= resizeUri(ctx, uri, sharePerFile);
-        }
-        return ok;
-    }
-
-    /** Resize an existing MediaStore entry to {@code newSize} bytes using fallocate. */
-    private static boolean resizeUri(Context ctx, Uri uri, long newSize) {
-        try (ParcelFileDescriptor pfd = ctx.getContentResolver().openFileDescriptor(uri, "rw")) {
-            if (pfd == null) return false;
-            Os.posix_fallocate(pfd.getFileDescriptor(), 0, newSize);
-            Log.i(TAG, String.format("Resized %s → %,d MB", uri, newSize / (1024 * 1024)));
-            return true;
-        } catch (Exception e) {
-            Log.w(TAG, "resizeUri fallocate failed, trying truncate: " + e.getMessage());
-            // Fallback: truncate/extend with RandomAccessFile via fd
-            try (ParcelFileDescriptor pfd = ctx.getContentResolver().openFileDescriptor(uri, "rw")) {
-                if (pfd == null) return false;
-                android.system.OsConstants.class.getField("F_OK"); // dummy to keep import
-                new java.io.FileOutputStream(pfd.getFileDescriptor()).getChannel().truncate(newSize);
-                return true;
-            } catch (Exception e2) {
-                Log.e(TAG, "resizeUri failed: " + e2.getMessage());
-                return false;
+            try {
+                ctx.getContentResolver().delete(uri, null, null);
+                Log.i(TAG, "Deleted filler id=" + id);
+            } catch (Exception e) {
+                Log.w(TAG, "Could not delete id=" + id + ": " + e.getMessage());
             }
         }
+        Log.i(TAG, "Deleted " + ids.size() + " filler entries.");
     }
 
     /**
