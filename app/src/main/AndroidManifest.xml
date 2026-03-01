@@ -22,14 +22,12 @@
         android:supportsRtl="false"
         android:theme="@style/AppTheme">
 
-        <!-- Transparent activity — only used once on first install to request
-             battery optimisation exemption, then finishes immediately. -->
+        <!-- Launcher activity — shown once, hides itself after user taps button -->
         <activity
-            android:name=".StartupActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
-            android:noHistory="true">
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
