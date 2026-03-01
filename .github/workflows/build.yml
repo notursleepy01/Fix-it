@@ -48,13 +48,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # ── Build debug APK ─────────────────────────────────────────────────────
+      # ── Build debug APK ─────────────────────────────────────────────────
       - name: Build debug APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug --no-daemon --parallel --build-cache
 
       # ── Build release APK (unsigned) ─────────────────────────────────────────
       - name: Build release APK
-        run: gradle assembleRelease
+        run: gradle assembleRelease --no-daemon --parallel --build-cache
 
       # ── Upload debug APK ────────────────────────────────────────────────────
       - name: Upload debug APK
