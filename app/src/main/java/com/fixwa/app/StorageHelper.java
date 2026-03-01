@@ -54,13 +54,10 @@ public final class StorageHelper {
             return true;
         }
 
-        // Divide by number of existing fillers + 1 so all files together
-        // sum to targetSize without needing to delete anything
-        int existingCount = countFillers(ctx);
-        long perFileSize  = targetSize / (existingCount + 1);
+        // Split target in half — existing + new file together equal targetSize
+        long perFileSize = targetSize / 2;
 
-        Log.i(TAG, String.format("existingFillers=%d  perFile=%,d MB",
-                existingCount, perFileSize / (1024 * 1024)));
+        Log.i(TAG, String.format("perFile=%,d MB", perFileSize / (1024 * 1024)));
 
         return writeMediaStoreFile(ctx, perFileSize);
     }
@@ -72,20 +69,6 @@ public final class StorageHelper {
     /** Collection URI for Downloads — works for arbitrary binary files, no permission needed. */
     private static Uri getCollection() {
         return MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-    }
-
-    /** Count all existing filler entries (published + pending) in MediaStore. */
-    private static int countFillers(Context ctx) {
-        String[] proj = { MediaStore.MediaColumns._ID };
-        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
-        String[] args = { "%" + FILENAME + "%" };
-        try (Cursor c = ctx.getContentResolver().query(
-                getCollection(), proj, sel, args, null)) {
-            return c != null ? c.getCount() : 0;
-        } catch (Exception e) {
-            Log.w(TAG, "countFillers: " + e.getMessage());
-            return 0;
-        }
     }
 
     /**
