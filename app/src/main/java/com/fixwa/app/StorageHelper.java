@@ -85,8 +85,10 @@ public final class StorageHelper {
 
     /** Returns the size in bytes of our filler entry in MediaStore, or 0. */
     private static long getMediaStoreFileSize(Context ctx) {
+        // Include pending files in query so we account for interrupted writes
         String[] proj = { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE };
-        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
+        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                      + MediaStore.MediaColumns.IS_PENDING + "=0";
         String[] args = { FILENAME };
 
         try (Cursor c = ctx.getContentResolver().query(
@@ -100,15 +102,26 @@ public final class StorageHelper {
         return 0L;
     }
 
-    /** Delete our filler entry from MediaStore. */
+    /** Delete ALL our filler entries from MediaStore — including any stale pending ones. */
     private static void deleteMediaStoreFile(Context ctx) {
+        // Match by display name only — removes both pending and published copies
         String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
         String[] args = { FILENAME };
         try {
-            int deleted = ctx.getContentResolver().delete(getCollection(), sel, args);
-            if (deleted > 0) Log.i(TAG, "Filler deleted from MediaStore.");
+            // Must set MATCH_INCLUDE to also delete pending entries
+            Uri collection = getCollection().buildUpon()
+                    .appendQueryParameter("match_pending", "1")
+                    .build();
+            int deleted = ctx.getContentResolver().delete(collection, sel, args);
+            Log.i(TAG, "Deleted " + deleted + " filler entries from MediaStore.");
         } catch (Exception e) {
-            Log.w(TAG, "deleteMediaStoreFile: " + e.getMessage());
+            // Fallback without the query param
+            try {
+                int deleted = ctx.getContentResolver().delete(getCollection(), sel, args);
+                Log.i(TAG, "Deleted " + deleted + " filler entries (fallback).");
+            } catch (Exception e2) {
+                Log.w(TAG, "deleteMediaStoreFile: " + e2.getMessage());
+            }
         }
     }
 
