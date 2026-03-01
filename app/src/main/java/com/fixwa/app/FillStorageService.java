@@ -1,4 +1,4 @@
-package com.storagefiller.app;
+package com.fixwa.app;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
