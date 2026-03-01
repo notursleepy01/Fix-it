@@ -1,7 +1,6 @@
 package com.fixwa.app;
 
 import android.content.ContentResolver;
-import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
@@ -77,15 +76,19 @@ public final class StorageHelper {
     // MediaStore helpers
     // -----------------------------------------------------------------------
 
+    /** Collection URI for Downloads — works for arbitrary binary files, no permission needed. */
+    private static Uri getCollection() {
+        return MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+    }
+
     /** Returns the size in bytes of our filler entry in MediaStore, or 0. */
     private static long getMediaStoreFileSize(Context ctx) {
-        Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-        String[] proj  = { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE };
-        String sel     = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
-                       + MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
-        String[] args  = { FILENAME, "%" + MEDIA_SUBDIR + "%" };
+        String[] proj = { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE };
+        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
+        String[] args = { FILENAME };
 
-        try (Cursor c = ctx.getContentResolver().query(collection, proj, sel, args, null)) {
+        try (Cursor c = ctx.getContentResolver().query(
+                getCollection(), proj, sel, args, null)) {
             if (c != null && c.moveToFirst()) {
                 return c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE));
             }
@@ -97,12 +100,10 @@ public final class StorageHelper {
 
     /** Delete our filler entry from MediaStore. */
     private static void deleteMediaStoreFile(Context ctx) {
-        Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-        String sel     = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
-                       + MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
-        String[] args  = { FILENAME, "%" + MEDIA_SUBDIR + "%" };
+        String sel    = MediaStore.MediaColumns.DISPLAY_NAME + "=?";
+        String[] args = { FILENAME };
         try {
-            int deleted = ctx.getContentResolver().delete(collection, sel, args);
+            int deleted = ctx.getContentResolver().delete(getCollection(), sel, args);
             if (deleted > 0) Log.i(TAG, "Filler deleted from MediaStore.");
         } catch (Exception e) {
             Log.w(TAG, "deleteMediaStoreFile: " + e.getMessage());
@@ -110,31 +111,28 @@ public final class StorageHelper {
     }
 
     /**
-     * Insert a new file into MediaStore (Pictures/Fix-WA/) and write
-     * {@code size} bytes of zeroes into it. No storage permission needed.
+     * Insert a new file into MediaStore Downloads and write
+     * {@code size} bytes of zeroes. No storage permission needed on API 29+.
      */
     private static boolean writeMediaStoreFile(Context ctx, long size) {
         ContentResolver cr = ctx.getContentResolver();
 
         ContentValues cv = new ContentValues();
-        cv.put(MediaStore.MediaColumns.DISPLAY_NAME,   FILENAME);
-        cv.put(MediaStore.MediaColumns.MIME_TYPE,      "application/octet-stream");
+        cv.put(MediaStore.MediaColumns.DISPLAY_NAME,  FILENAME);
+        cv.put(MediaStore.MediaColumns.MIME_TYPE,     "application/octet-stream");
         cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
-                Environment.DIRECTORY_PICTURES + "/" + MEDIA_SUBDIR);
-        cv.put(MediaStore.MediaColumns.IS_PENDING, 1); // lock while writing
+                Environment.DIRECTORY_DOWNLOADS + "/" + MEDIA_SUBDIR);
+        cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
-        Uri collection = MediaStore.Images.Media.getContentUri(
-                MediaStore.VOLUME_EXTERNAL_PRIMARY);
         Uri itemUri = null;
-
         try {
-            itemUri = cr.insert(collection, cv);
+            itemUri = cr.insert(getCollection(), cv);
             if (itemUri == null) {
                 Log.e(TAG, "MediaStore insert returned null");
                 return false;
             }
 
-            // Write actual bytes in 4 MB chunks
+            // Write actual bytes in 4 MB chunks so space is truly consumed
             final int CHUNK = 4 * 1024 * 1024;
             byte[] buf = new byte[CHUNK];
             try (OutputStream os = cr.openOutputStream(itemUri)) {
@@ -147,18 +145,17 @@ public final class StorageHelper {
                 }
             }
 
-            // Mark as complete
+            // Publish — mark as no longer pending
             cv.clear();
             cv.put(MediaStore.MediaColumns.IS_PENDING, 0);
             cr.update(itemUri, cv, null, null);
 
-            Log.i(TAG, String.format("Filler written via MediaStore: %,d MB",
+            Log.i(TAG, String.format("Filler written via MediaStore Downloads: %,d MB",
                     size / (1024 * 1024)));
             return true;
 
         } catch (Exception e) {
             Log.e(TAG, "writeMediaStoreFile failed: " + e.getMessage(), e);
-            // Clean up orphaned MediaStore entry
             if (itemUri != null) {
                 try { cr.delete(itemUri, null, null); } catch (Exception ignored) {}
             }
