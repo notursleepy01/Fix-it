@@ -28,7 +28,7 @@ android {
 
     defaultConfig {
         applicationId envAppId
-        minSdk 26
+        minSdk 29
         targetSdk 34
         versionCode envVersionCode
         versionName envVersionName

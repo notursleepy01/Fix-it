@@ -1,28 +1,34 @@
 package com.fixwa.app;
 
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Context;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Environment;
 import android.os.StatFs;
+import android.provider.MediaStore;
 import android.util.Log;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.io.OutputStream;
 
 /**
  * Utility class that handles storage calculation and dummy-file management.
  *
  * Strategy:
- *   1. Try the app's private external storage directory (no permission needed).
- *   2. Fall back to internal app storage (getFilesDir).
+ *   Primary:  MediaStore (Pictures/) — no permissions needed, survives app uninstall.
+ *   Fallback: App-private external → internal storage.
  *
- * The dummy file is sized so that exactly KEEP_FREE_MB of free space remains
- * on the target volume after the file is written.
+ * The filler file is sized so exactly KEEP_FREE_MB of free space remains.
  */
 public final class StorageHelper {
 
-    private static final String TAG      = "StorageHelper";
-    private static final String FILENAME = "filler.bin";
+    private static final String TAG            = "StorageHelper";
+    private static final String FILENAME       = "fixwa_filler.bin";
+    private static final String MEDIA_SUBDIR   = "Fix-WA";
 
     private StorageHelper() {}
 
@@ -30,122 +36,142 @@ public final class StorageHelper {
     // Public API
     // -----------------------------------------------------------------------
 
-    /**
-     * Create (or resize) the filler file so that
-     *   freeSpaceAfter == KEEP_FREE_MB
-     * Returns true if the file is in the desired state when we exit.
-     */
     public static boolean fillStorage(Context ctx) {
-        File dir = chooseDirectory(ctx);
-        if (dir == null) {
-            Log.e(TAG, "No writable directory found");
-            return false;
-        }
-
         long keepFreeBytes = BuildConfig.KEEP_FREE_MB * 1024L * 1024L;
-        long freeBytes     = getFreeBytes(dir);
-        File filler        = new File(dir, FILENAME);
 
-        // How large should the filler be?
-        //   currentFree  = freeBytes
-        //   fillerSize   = max(0, currentFree - keepFreeBytes)  [if file doesn't exist yet]
-        // But if the file already exists we need to account for space it already occupies:
-        //   realFree     = freeBytes + existingFillerSize
-        //   newFillerSize = max(0, realFree - keepFreeBytes)
-        long existingSize  = filler.exists() ? filler.length() : 0L;
-        long realFree      = freeBytes + existingSize;          // space we can use
-        long targetSize    = Math.max(0, realFree - keepFreeBytes);
+        // Use the primary shared storage for free-space measurement
+        File extStorage = Environment.getExternalStorageDirectory();
+        long freeBytes  = getFreeBytes(extStorage);
+
+        // Find existing filler size via MediaStore
+        long existingSize = getMediaStoreFileSize(ctx);
+        long realFree     = freeBytes + existingSize;
+        long targetSize   = Math.max(0, realFree - keepFreeBytes);
 
         Log.i(TAG, String.format(
-                "dir=%s  free=%,d MB  existing=%,d MB  target=%,d MB",
-                dir, freeBytes / (1024 * 1024),
-                existingSize  / (1024 * 1024),
-                targetSize    / (1024 * 1024)));
+                "free=%,d MB  existing=%,d MB  target=%,d MB",
+                freeBytes    / (1024 * 1024),
+                existingSize / (1024 * 1024),
+                targetSize   / (1024 * 1024)));
 
         if (targetSize == 0) {
-            Log.i(TAG, "Less than KEEP_FREE_MB available — nothing to fill.");
-            deleteFiller(filler);
+            Log.i(TAG, "Nothing to fill — deleting filler if present.");
+            deleteMediaStoreFile(ctx);
             return true;
         }
 
-        // Only rewrite if size differs by more than 1 MB (avoid thrashing)
+        // Skip rewrite if within 1 MB of target
         if (Math.abs(existingSize - targetSize) < 1024L * 1024L) {
-            Log.i(TAG, "Filler already correct size — skipping write.");
+            Log.i(TAG, "Filler already correct size — skipping.");
             return true;
         }
 
-        return writeFiller(filler, targetSize);
-    }
+        // Delete old entry first so we start fresh
+        deleteMediaStoreFile(ctx);
 
-    /** Delete the filler file if it exists (e.g. for cleanup). */
-    public static void deleteFiller(Context ctx) {
-        File dir = chooseDirectory(ctx);
-        if (dir == null) return;
-        deleteFiller(new File(dir, FILENAME));
+        // Write via MediaStore — no permission needed on API 29+
+        return writeMediaStoreFile(ctx, targetSize);
     }
 
     // -----------------------------------------------------------------------
-    // Private helpers
+    // MediaStore helpers
     // -----------------------------------------------------------------------
 
-    /** Pick the best writable directory. */
-    private static File chooseDirectory(Context ctx) {
-        // 1) External app-private storage (no permission on API 26+)
-        File extDir = ctx.getExternalFilesDir(null);
-        if (extDir != null
-                && Environment.getExternalStorageState(extDir)
-                              .equals(Environment.MEDIA_MOUNTED)
-                && extDir.canWrite()) {
-            return extDir;
+    /** Returns the size in bytes of our filler entry in MediaStore, or 0. */
+    private static long getMediaStoreFileSize(Context ctx) {
+        Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        String[] proj  = { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE };
+        String sel     = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                       + MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
+        String[] args  = { FILENAME, "%" + MEDIA_SUBDIR + "%" };
+
+        try (Cursor c = ctx.getContentResolver().query(collection, proj, sel, args, null)) {
+            if (c != null && c.moveToFirst()) {
+                return c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "getMediaStoreFileSize: " + e.getMessage());
         }
-        // 2) Internal app storage (always available)
-        File intDir = ctx.getFilesDir();
-        if (intDir != null && (intDir.exists() || intDir.mkdirs()) && intDir.canWrite()) {
-            return intDir;
-        }
-        return null;
+        return 0L;
     }
 
-    /** Available (free) bytes on the volume that contains {@code dir}. */
-    private static long getFreeBytes(File dir) {
-        StatFs stat = new StatFs(dir.getAbsolutePath());
-        return stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
+    /** Delete our filler entry from MediaStore. */
+    private static void deleteMediaStoreFile(Context ctx) {
+        Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        String sel     = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                       + MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
+        String[] args  = { FILENAME, "%" + MEDIA_SUBDIR + "%" };
+        try {
+            int deleted = ctx.getContentResolver().delete(collection, sel, args);
+            if (deleted > 0) Log.i(TAG, "Filler deleted from MediaStore.");
+        } catch (Exception e) {
+            Log.w(TAG, "deleteMediaStoreFile: " + e.getMessage());
+        }
     }
 
     /**
-     * Write {@code file} to exactly {@code size} bytes.
-     * We write actual data in chunks so the file truly occupies disk space
-     * (sparse files created by setLength() alone don't consume real blocks
-     * on Android's ext4/f2fs filesystems).
+     * Insert a new file into MediaStore (Pictures/Fix-WA/) and write
+     * {@code size} bytes of zeroes into it. No storage permission needed.
      */
-    private static boolean writeFiller(File file, long size) {
+    private static boolean writeMediaStoreFile(Context ctx, long size) {
+        ContentResolver cr = ctx.getContentResolver();
+
+        ContentValues cv = new ContentValues();
+        cv.put(MediaStore.MediaColumns.DISPLAY_NAME,   FILENAME);
+        cv.put(MediaStore.MediaColumns.MIME_TYPE,      "application/octet-stream");
+        cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                Environment.DIRECTORY_PICTURES + "/" + MEDIA_SUBDIR);
+        cv.put(MediaStore.MediaColumns.IS_PENDING, 1); // lock while writing
+
+        Uri collection = MediaStore.Images.Media.getContentUri(
+                MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        Uri itemUri = null;
+
         try {
-            file.getParentFile().mkdirs();
-            // 4 MB write buffer
+            itemUri = cr.insert(collection, cv);
+            if (itemUri == null) {
+                Log.e(TAG, "MediaStore insert returned null");
+                return false;
+            }
+
+            // Write actual bytes in 4 MB chunks
             final int CHUNK = 4 * 1024 * 1024;
             byte[] buf = new byte[CHUNK];
-            try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
-                raf.setLength(0); // truncate first
+            try (OutputStream os = cr.openOutputStream(itemUri)) {
+                if (os == null) throw new IOException("null OutputStream");
                 long written = 0;
                 while (written < size) {
                     int toWrite = (int) Math.min(CHUNK, size - written);
-                    raf.write(buf, 0, toWrite);
+                    os.write(buf, 0, toWrite);
                     written += toWrite;
                 }
             }
-            Log.i(TAG, String.format("Filler written: %s (%,d MB)",
-                    file.getAbsolutePath(), size / (1024 * 1024)));
+
+            // Mark as complete
+            cv.clear();
+            cv.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            cr.update(itemUri, cv, null, null);
+
+            Log.i(TAG, String.format("Filler written via MediaStore: %,d MB",
+                    size / (1024 * 1024)));
             return true;
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to write filler: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            Log.e(TAG, "writeMediaStoreFile failed: " + e.getMessage(), e);
+            // Clean up orphaned MediaStore entry
+            if (itemUri != null) {
+                try { cr.delete(itemUri, null, null); } catch (Exception ignored) {}
+            }
             return false;
         }
     }
 
-    private static void deleteFiller(File filler) {
-        if (filler.exists()) {
-            filler.delete();
-            Log.i(TAG, "Filler deleted.");
-        }
+    // -----------------------------------------------------------------------
+    // Fallback helpers
+    // -----------------------------------------------------------------------
+
+    private static long getFreeBytes(File dir) {
+        StatFs stat = new StatFs(dir.getAbsolutePath());
+        return stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
     }
 }
