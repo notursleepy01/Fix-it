@@ -5,61 +5,68 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:  # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
-      # ── Checkout ────────────────────────────────────────────────────────────
+      # ── Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Load .env ───────────────────────────────────────────────────────────
+      # ── Load .env ─────────────────────────────────────────────────────────
       - name: Load .env values
         id: dotenv
         run: |
-          # Parse .env and export each key=value as a GitHub Actions output
           while IFS= read -r line; do
-            line="${line%%#*}"          # strip inline comments
-            line="${line// /}"          # strip spaces
+            line="${line%%#*}"
+            line="${line// /}"
             [[ -z "$line" ]] && continue
             key="${line%%=*}"
             val="${line#*=}"
             echo "${key}=${val}" >> "$GITHUB_OUTPUT"
           done < .env
 
-      # ── Java ────────────────────────────────────────────────────────────────
+      # ── Java ──────────────────────────────────────────────────────────────
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # ── Gradle (not gradlew) ────────────────────────────────────────────────
+      # ── Gradle ────────────────────────────────────────────────────────────
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.4'        # installs gradle 8.4 onto PATH as `gradle`
+          gradle-version: '8.4'
           cache-read-only: false
 
-      # ── Cache Android SDK ───────────────────────────────────────────────────
-      - name: Cache Android SDK
+      # ── Install missing Android SDK components (cached) ───────────────────
+      - name: Cache Android SDK components
         uses: actions/cache@v4
+        id: sdk-cache
         with:
           path: |
-            ${{ env.ANDROID_HOME }}/platforms
-            ${{ env.ANDROID_HOME }}/build-tools
-            ${{ env.ANDROID_HOME }}/platform-tools
-          key: android-sdk-34
-          restore-keys: android-sdk-
+            /usr/local/lib/android/sdk/platforms/android-34
+            /usr/local/lib/android/sdk/build-tools/34.0.0
+          key: android-sdk-components-api34-bt34.0.0
+          restore-keys: android-sdk-components-
 
-      # ── Android SDK ─────────────────────────────────────────────────────────
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK components (if not cached)
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            --sdk_root=$ANDROID_HOME
 
-      # ── Cache Gradle dependencies ────────────────────────────────────────────
+      # ── Cache Gradle dependencies ──────────────────────────────────────────
       - name: Cache Gradle dependencies
         uses: actions/cache@v4
         with:
@@ -69,15 +76,14 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle', 'gradle.properties') }}
           restore-keys: gradle-
 
-      # ── Build debug APK ─────────────────────────────────────────────────
+      # ── Build ──────────────────────────────────────────────────────────────
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --parallel --build-cache
 
-      # ── Build release APK (unsigned) ─────────────────────────────────────────
       - name: Build release APK
         run: gradle assembleRelease --no-daemon --parallel --build-cache
 
-      # ── Upload debug APK ────────────────────────────────────────────────────
+      # ── Upload APKs ────────────────────────────────────────────────────────
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -85,7 +91,6 @@ jobs:
           path: app/build/outputs/apk/debug/${{ steps.dotenv.outputs.APK_NAME }}-debug.apk
           retention-days: 30
 
-      # ── Upload release APK ───────────────────────────────────────────────────
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
