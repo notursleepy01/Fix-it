@@ -1,3 +1,7 @@
+plugins {
+    id 'com.android.application'
+}
+
 // Read .env file
 def envFile = new File(rootDir, '.env')
 def envProps = new Properties()
@@ -15,12 +19,8 @@ def apkName        = envProps.getProperty('APK_NAME',             'StorageFiller
 def appId          = envProps.getProperty('APP_ID',               'com.storagefiller.app')
 def versionCode    = (envProps.getProperty('VERSION_CODE',        '1')).toInteger()
 def versionName    = envProps.getProperty('VERSION_NAME',         '1.0.0')
-def keepFreeMb     = envProps.getProperty('KEEP_FREE_MB',         '100')
+def keepFreeMb     = envProps.getProperty('KEEP_FREE_MB',         '10240')
 def checkInterval  = envProps.getProperty('CHECK_INTERVAL_HOURS', '1')
-
-plugins {
-    id 'com.android.application'
-}
 
 android {
     namespace appId
